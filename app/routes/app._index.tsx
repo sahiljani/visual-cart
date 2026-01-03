@@ -104,50 +104,53 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const promoCode = formData.get("promoCode")?.toString().toUpperCase().trim();
 
     if (action === "subscribe") {
-        let planToUse = MONTHLY_PLAN;
+        let planToUse: typeof MONTHLY_PLAN | typeof MONTHLY_PLAN_50 = MONTHLY_PLAN;
 
         // Validate promo code if provided
         if (promoCode) {
-            const promoRecord = await prisma.promoCode.findUnique({
-                where: { code: promoCode },
-            });
-
-            if (!promoRecord) {
-                return json({ success: false, error: "Invalid promo code" });
-            }
-
-            if (!promoRecord.isActive) {
-                return json({ success: false, error: "This promo code is no longer active" });
-            }
-
-            // Handle different promo code types
-            if (promoRecord.type === "RECURRING" && promoRecord.discountPercent === 50) {
-                // Use the 50% off plan
-                planToUse = MONTHLY_PLAN_50;
-            } else if (promoRecord.type === "ONE_TIME" && promoRecord.discountPercent === 90) {
-                // Store the promo code to apply credit after subscription
-                await prisma.shop.upsert({
-                    where: { shopDomain: session.shop },
-                    update: { pendingPromoCode: promoCode, creditApplied: false },
-                    create: {
-                        shopDomain: session.shop,
-                        accessToken: session.accessToken || "",
-                        pendingPromoCode: promoCode,
-                        creditApplied: false,
-                    },
+            try {
+                const promoRecord = await prisma.promoCode.findUnique({
+                    where: { code: promoCode },
                 });
-                // Use standard plan, credit will be applied after
-                planToUse = MONTHLY_PLAN;
+
+                if (!promoRecord) {
+                    return json({ success: false, error: "Invalid promo code" });
+                }
+
+                if (!promoRecord.isActive) {
+                    return json({ success: false, error: "This promo code is no longer active" });
+                }
+
+                // Handle different promo code types
+                if (promoRecord.type === "RECURRING" && promoRecord.discountPercent === 50) {
+                    // Use the 50% off plan
+                    planToUse = MONTHLY_PLAN_50;
+                } else if (promoRecord.type === "ONE_TIME" && promoRecord.discountPercent === 90) {
+                    // Store the promo code to apply credit after subscription
+                    await prisma.shop.upsert({
+                        where: { shopDomain: session.shop },
+                        update: { pendingPromoCode: promoCode, creditApplied: false },
+                        create: {
+                            shopDomain: session.shop,
+                            accessToken: session.accessToken || "",
+                            pendingPromoCode: promoCode,
+                            creditApplied: false,
+                        },
+                    });
+                    // Use standard plan, credit will be applied after
+                    planToUse = MONTHLY_PLAN;
+                }
+            } catch (error) {
+                console.error("Error validating promo code:", error);
+                return json({ success: false, error: "Error validating promo code. Please try again." });
             }
         }
 
-        // Redirect to Shopify billing
-        await billing.require({
-            plans: [planToUse] as const,
+        // Redirect to Shopify billing - this will throw a redirect response
+        return billing.request({
+            plan: planToUse,
             isTest: true, // Set to false in production
-            onFailure: async () => {
-                return redirect("/app?billing=cancelled");
-            },
+            returnUrl: `https://admin.shopify.com/store/${session.shop.replace('.myshopify.com', '')}/apps/visual-cart`,
         });
     }
 
