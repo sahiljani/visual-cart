@@ -1,0 +1,30 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+# Note: client_id is set via SHOPIFY_API_KEY environment variable
+
+name = "VisualCart"
+application_url = "https://visualcart.janisahil.com"
+embedded = true
+
+[access_scopes]
+scopes = "read_metaobject_definitions,write_metaobject_definitions,read_metaobjects,write_metaobjects,read_metafields,write_metafields"
+
+[auth]
+redirect_urls = [
+  "https://visualcart.janisahil.com/auth/callback",
+  "https://visualcart.janisahil.com/auth/shopify/callback"
+]
+
+[webhooks]
+api_version = "2024-01"
+
+  [webhooks.privacy_compliance]
+  customer_deletion_url = "https://visualcart.janisahil.com/webhooks"
+  customer_data_request_url = "https://visualcart.janisahil.com/webhooks"
+  shop_deletion_url = "https://visualcart.janisahil.com/webhooks"
+
+[pos]
+embedded = false
+
+[build]
+automatically_update_urls_on_dev = true
+dev_store_url = ""
