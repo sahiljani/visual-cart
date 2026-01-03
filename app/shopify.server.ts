@@ -11,15 +11,24 @@ import { restResources } from "@shopify/shopify-api/rest/admin/2024-01";
 
 const prisma = new PrismaClient();
 
-// Billing configuration for $10/month plan
+// Billing configuration for plans
 export const MONTHLY_PLAN = "VisualCart Pro";
+export const MONTHLY_PLAN_50 = "VisualCart Pro - 50% Off";
+
 export const billingConfig = {
     [MONTHLY_PLAN]: {
         amount: 10.0,
         currencyCode: "USD",
         interval: BillingInterval.Every30Days,
+        trialDays: 7,
     },
-};
+    [MONTHLY_PLAN_50]: {
+        amount: 5.0,
+        currencyCode: "USD",
+        interval: BillingInterval.Every30Days,
+        trialDays: 7,
+    },
+} as const;
 
 const shopify = shopifyApp({
     apiKey: process.env.SHOPIFY_API_KEY || "",

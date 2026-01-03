@@ -32,6 +32,25 @@ model Shop {
   subscriptionActive   Boolean  @default(false)
   subscriptionChargeId String?
   plan                 String   @default("free")
+  pendingPromoCode     String?  // Promo code used during subscription
+  creditApplied        Boolean  @default(false) // Track if first-month credit was applied
   installedAt          DateTime @default(now())
   updatedAt            DateTime @updatedAt
+}
+
+// Promo code types
+enum PromoCodeType {
+  RECURRING   // Discount applies every month (e.g., 50MONTHLY)
+  ONE_TIME    // Discount applies only first month (e.g., 90FIRSTMONTH)
+}
+
+model PromoCode {
+  id              Int           @id @default(autoincrement())
+  code            String        @unique
+  type            PromoCodeType
+  discountPercent Int           // e.g., 50 for 50%, 90 for 90%
+  isActive        Boolean       @default(true)
+  description     String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 }

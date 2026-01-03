@@ -1,6 +1,7 @@
 import { json, redirect } from "@remix-run/node";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
-import { useLoaderData, useSubmit } from "@remix-run/react";
+import { useLoaderData, useSubmit, useActionData } from "@remix-run/react";
+import { useState } from "react";
 import {
     Page,
     Layout,
@@ -11,11 +12,16 @@ import {
     BlockStack,
     InlineStack,
     Badge,
+    TextField,
+    Box,
 } from "@shopify/polaris";
-import { authenticate, MONTHLY_PLAN } from "../shopify.server";
+import { authenticate, MONTHLY_PLAN, MONTHLY_PLAN_50 } from "../shopify.server";
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
+
+// Type for action data response
+type ActionData = { success: boolean; error?: string; message?: string };
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
     const { admin, billing, session } = await authenticate.admin(request);
@@ -26,16 +32,68 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         where: { shopDomain: shop },
     });
 
-    // Check billing status
+    // Check billing status for both plans
     const { hasActivePayment } = await billing.check({
-        plans: [MONTHLY_PLAN],
+        plans: [MONTHLY_PLAN, MONTHLY_PLAN_50],
         isTest: true, // Set to false in production
+    });
+
+    // If subscription just activated and there's a pending promo code for 90% off,
+    // we need to apply the credit
+    if (hasActivePayment && shopRecord?.pendingPromoCode === "90FIRSTMONTH" && !shopRecord?.creditApplied) {
+        // Apply $9 credit (90% of $10)
+        try {
+            await admin.graphql(
+                `#graphql
+                mutation AppCreditCreate($description: String!, $amount: MoneyInput!, $test: Boolean) {
+                    appCreditCreate(description: $description, amount: $amount, test: $test) {
+                        appCredit {
+                            id
+                            amount {
+                                amount
+                            }
+                        }
+                        userErrors {
+                            field
+                            message
+                        }
+                    }
+                }`,
+                {
+                    variables: {
+                        description: "90FIRSTMONTH Promo: 90% off first month",
+                        amount: {
+                            amount: "9.00",
+                            currencyCode: "USD",
+                        },
+                        test: true, // Set to false in production
+                    },
+                }
+            );
+
+            // Mark credit as applied
+            await prisma.shop.update({
+                where: { shopDomain: shop },
+                data: { creditApplied: true, pendingPromoCode: null },
+            });
+        } catch (error) {
+            console.error("Failed to apply credit:", error);
+        }
+    }
+
+    // Get active promo codes for display
+    const promoCodes = await prisma.promoCode.findMany({
+        where: { isActive: true },
+        select: { code: true, discountPercent: true, type: true },
     });
 
     return json({
         shop,
         subscriptionActive: hasActivePayment,
         plan: shopRecord?.plan || "free",
+        appliedPromo: shopRecord?.pendingPromoCode || null,
+        creditApplied: shopRecord?.creditApplied || false,
+        availablePromoCodes: promoCodes,
     });
 };
 
@@ -43,11 +101,49 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const { admin, billing, session } = await authenticate.admin(request);
     const formData = await request.formData();
     const action = formData.get("action");
+    const promoCode = formData.get("promoCode")?.toString().toUpperCase().trim();
 
     if (action === "subscribe") {
+        let planToUse = MONTHLY_PLAN;
+
+        // Validate promo code if provided
+        if (promoCode) {
+            const promoRecord = await prisma.promoCode.findUnique({
+                where: { code: promoCode },
+            });
+
+            if (!promoRecord) {
+                return json({ success: false, error: "Invalid promo code" });
+            }
+
+            if (!promoRecord.isActive) {
+                return json({ success: false, error: "This promo code is no longer active" });
+            }
+
+            // Handle different promo code types
+            if (promoRecord.type === "RECURRING" && promoRecord.discountPercent === 50) {
+                // Use the 50% off plan
+                planToUse = MONTHLY_PLAN_50;
+            } else if (promoRecord.type === "ONE_TIME" && promoRecord.discountPercent === 90) {
+                // Store the promo code to apply credit after subscription
+                await prisma.shop.upsert({
+                    where: { shopDomain: session.shop },
+                    update: { pendingPromoCode: promoCode, creditApplied: false },
+                    create: {
+                        shopDomain: session.shop,
+                        accessToken: session.accessToken || "",
+                        pendingPromoCode: promoCode,
+                        creditApplied: false,
+                    },
+                });
+                // Use standard plan, credit will be applied after
+                planToUse = MONTHLY_PLAN;
+            }
+        }
+
         // Redirect to Shopify billing
         await billing.require({
-            plans: [MONTHLY_PLAN],
+            plans: [planToUse] as const,
             isTest: true, // Set to false in production
             onFailure: async () => {
                 return redirect("/app?billing=cancelled");
@@ -59,19 +155,19 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         // Set the metafield to activate the feature
         const response = await admin.graphql(
             `#graphql
-      mutation SetSubscriptionMetafield($metafields: [MetafieldsSetInput!]!) {
-        metafieldsSet(metafields: $metafields) {
-          metafields {
-            key
-            namespace
-            value
-          }
-          userErrors {
-            field
-            message
-          }
-        }
-      }`,
+            mutation SetSubscriptionMetafield($metafields: [MetafieldsSetInput!]!) {
+                metafieldsSet(metafields: $metafields) {
+                    metafields {
+                        key
+                        namespace
+                        value
+                    }
+                    userErrors {
+                        field
+                        message
+                    }
+                }
+            }`,
             {
                 variables: {
                     metafields: [
@@ -106,11 +202,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function Index() {
-    const { shop, subscriptionActive, plan } = useLoaderData<typeof loader>();
+    const { shop, subscriptionActive, plan, availablePromoCodes } = useLoaderData<typeof loader>();
+    const actionData = useActionData<typeof action>();
     const submit = useSubmit();
+    const [promoCode, setPromoCode] = useState("");
 
     const handleSubscribe = () => {
-        submit({ action: "subscribe" }, { method: "post" });
+        submit({ action: "subscribe", promoCode }, { method: "post" });
     };
 
     const handleActivate = () => {
@@ -140,18 +238,37 @@ export default function Index() {
                                     </p>
                                 </Banner>
                             ) : (
-                                <Banner tone="warning">
-                                    <p>
-                                        Upgrade to VisualCart Pro ($10/month) to unlock the
-                                        Shoppable Video Carousel feature.
-                                    </p>
-                                </Banner>
+                                <>
+                                    <Banner tone="warning">
+                                        <p>
+                                            Upgrade to VisualCart Pro ($10/month) to unlock the
+                                            Shoppable Video Carousel feature. Includes a 7-day free trial!
+                                        </p>
+                                    </Banner>
+
+                                    {actionData?.error && (
+                                        <Banner tone="critical">
+                                            <p>{actionData.error}</p>
+                                        </Banner>
+                                    )}
+
+                                    <Box paddingBlockStart="200">
+                                        <TextField
+                                            label="Promo Code (optional)"
+                                            value={promoCode}
+                                            onChange={setPromoCode}
+                                            placeholder="Enter promo code"
+                                            autoComplete="off"
+                                            helpText="Have a promo code? Enter it here for a discount."
+                                        />
+                                    </Box>
+                                </>
                             )}
 
                             <InlineStack gap="300">
                                 {!subscriptionActive && (
                                     <Button variant="primary" onClick={handleSubscribe}>
-                                        Subscribe - $10/month
+                                        {promoCode ? "Subscribe with Promo" : "Subscribe - $10/month"}
                                     </Button>
                                 )}
                                 {subscriptionActive && (
@@ -179,6 +296,27 @@ export default function Index() {
                         </BlockStack>
                     </Card>
                 </Layout.Section>
+
+                {!subscriptionActive && availablePromoCodes && availablePromoCodes.length > 0 && (
+                    <Layout.Section>
+                        <Card>
+                            <BlockStack gap="300">
+                                <Text as="h2" variant="headingMd">
+                                    Available Promo Codes
+                                </Text>
+                                {availablePromoCodes.map((promo) => (
+                                    <InlineStack key={promo.code} gap="200" align="start">
+                                        <Badge tone="info">{promo.code}</Badge>
+                                        <Text as="span">
+                                            {promo.discountPercent}% off{" "}
+                                            {promo.type === "RECURRING" ? "(every month)" : "(first month only)"}
+                                        </Text>
+                                    </InlineStack>
+                                ))}
+                            </BlockStack>
+                        </Card>
+                    </Layout.Section>
+                )}
             </Layout>
         </Page>
     );
