@@ -45,7 +45,7 @@ const shopify = shopifyApp({
     appUrl: process.env.SHOPIFY_APP_URL || "https://visualcart.janisahil.com",
     authPathPrefix: "/auth",
     sessionStorage: new PrismaSessionStorage(prisma),
-    distribution: AppDistribution.AppStore,
+    distribution: AppDistribution.SingleMerchant, // Use SingleMerchant for dev, change to AppStore when publishing
     restResources,
     billing: billingConfig,
     future: {
