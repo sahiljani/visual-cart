@@ -2,6 +2,7 @@
     "name": "visualcart-shopify-app",
     "version": "1.0.0",
     "private": true,
+    "type": "module",
     "scripts": {
         "build": "remix vite:build",
         "dev": "shopify app dev",
